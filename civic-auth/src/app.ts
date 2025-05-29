@@ -1,4 +1,3 @@
-
 import express, { Request, Response } from 'express';
 import bodyParser from 'body-parser';
 import cookieParser from 'cookie-parser';
@@ -9,8 +8,8 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const PORT = process.env.AUTH_PORT || 3001;
-const BASE_URL = process.env.BASE_URL!;              // e.g. http://localhost:3001
-const BOT_CALLBACK_URL = process.env.BOT_CALLBACK_URL!;  // e.g. http://localhost:3000/auth/notify
+const BASE_URL = process.env.BASE_URL!;               // e.g. http://localhost:3001
+const BOT_CALLBACK_URL = process.env.BOT_CALLBACK_URL!; // e.g. http://localhost:3000/api/notify-login
 
 const civicConfig = {
   clientId: process.env.CLIENT_ID!,
@@ -20,52 +19,88 @@ const civicConfig = {
 };
 
 const appAuth = express();
-appAuth.use(bodyParser.urlencoded({ extended: false }));
 appAuth.use(bodyParser.json());
 appAuth.use(cookieParser());
 
-// Attach CivicAuth
-appAuth.use((req: Request, res: Response, next) => {
-  // @ts-ignore
-  req.storage = new CookieStorage(req, res);
-  // @ts-ignore
-  req.civicAuth = new CivicAuth(req.storage, civicConfig);
+// 👇 Subclass CookieStorage so we can call its protected ctor
+class ExpressCookieStorage extends CookieStorage {
+  async delete(key: string): Promise<void> {
+    this.res.clearCookie(key, this.settings);
+  }
+  private req: Request;
+  private res: Response;
+  constructor(req: Request, res: Response) {
+    // pass secure flag based on your BASE_URL
+    super({ secure: BASE_URL.startsWith('https') });
+    this.req = req;
+    this.res = res;
+  }
+  async get(key: string): Promise<string | null> {
+    return Promise.resolve(this.req.cookies[key] ?? null);
+  }
+  async set(key: string, value: string): Promise<void> {
+    this.res.cookie(key, value, this.settings);
+  }
+}
+
+// 🔧 Attach storage + auth per request
+appAuth.use((req, res, next) => {
+  const storage = new ExpressCookieStorage(req, res);
+  // 2 args now: storage + config
+  const civicAuth = new CivicAuth(storage, civicConfig);
+  (req as any).storage = storage;
+  (req as any).civicAuth = civicAuth;
   next();
 });
 
-// Return a login URL
+// 1️⃣ Build PKCE verifier, set cookie, and redirect to Civic
 appAuth.get('/auth/url', async (req: Request, res: Response) => {
   const state = req.query.state as string;
-  // Build URL including state
-  // @ts-ignore
-  const loginUrl = await req.civicAuth.buildLoginUrl({ state });
-  res.json({ loginUrl });
-});
-
-// OAuth callback
-appAuth.get('/auth/callback', async (req: Request, res: Response) => {
+  if (!state) return res.status(400).send('Missing state (phone)');
   try {
-    const { code, state } = req.query as any;
-    // @ts-ignore
-    await req.civicAuth.resolveOAuthAccessCode(code, state);
-    // @ts-ignore
-    const user = await req.civicAuth.getUser();
-
-    // Notify Bot Server
-    await axios.post(BOT_CALLBACK_URL, { state, user });
-
-    res.send('Login successful! You can now close this window.');
+    // buildLoginUrl() will call storage.set(...) internally
+    const loginUrl = await (req as any).civicAuth.buildLoginUrl({ state });
+    return res.redirect(loginUrl.toString());
   } catch (err) {
-    console.error('Auth callback error:', err);
-    res.status(500).send('Authentication failed');
+    console.error('Error building login URL:', err);
+    return res.status(500).send('Could not build login URL');
   }
 });
 
-// Optional logout
+// 2️⃣ Civic redirect callback
+appAuth.get('/auth/callback', async (req: Request, res: Response) => {
+  try {
+    // This will read the code_verifier cookie you set, exchange code for tokens
+    await (req as any).civicAuth.resolveOAuthAccessCode(
+      req.query.code as string,
+      req.query.state as string
+    );
+    const user = await (req as any).civicAuth.getUser();
+    // Persist full user info in another cookie if you like
+    await (req as any).storage.set('user', JSON.stringify(user));
+
+    // Notify your Bot/Agent server
+    await axios.post(BOT_CALLBACK_URL, {
+      phone: req.query.state,
+      user,
+    });
+
+    return res.send('✅ Login successful! You can now close this window.');
+  } catch (err) {
+    console.error('Auth callback error:', err);
+    return res.status(500).send('Authentication failed');
+  }
+});
+
+// 3️⃣ Optional logout redirect
 appAuth.get('/auth/logout', async (req: Request, res: Response) => {
-  // @ts-ignore
-  const url = await req.civicAuth.buildLogoutRedirectUrl();
-  res.redirect(url);
+  try {
+    const url = await (req as any).civicAuth.buildLogoutRedirectUrl();
+    return res.redirect(url.toString());
+  } catch (err) {
+    console.error('Logout error:', err);
+    return res.status(500).send('Could not log out');
+  }
 });
 
 appAuth.listen(PORT, () => {
