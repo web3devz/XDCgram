@@ -7,82 +7,114 @@ import { createWalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { xdcTestnet } from "viem/chains";
 import twilio from "twilio";
+import axios from "axios";
 import { getOnChainTools } from "@goat-sdk/adapter-vercel-ai";
-// import { USDC, erc20 } from "@goat-sdk/plugin-erc20";
+import { USDC, erc20 } from "@goat-sdk/plugin-erc20";
 import { coingecko } from "@goat-sdk/plugin-coingecko";
 import { viem } from "@goat-sdk/wallet-viem";
+import dotenv from 'dotenv';
 
+dotenv.config();
 
-require("dotenv").config();
-const app = express();
-app.use(bodyParser.json()); // for parsing application/json
-
+// Wallet setup
 const account = privateKeyToAccount(process.env.KEY as `0x${string}`);
-
 const walletClient = createWalletClient({
-    account: account,
-    transport: http(process.env.RPC_PROVIDER_URL),
-    chain: xdcTestnet,
+  account,
+  transport: http(process.env.RPC_PROVIDER_URL!),
+  chain: xdcTestnet,
 });
 
-const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+// Twilio client & WhatsApp “from” 
+const twilioClient = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+const twilioFrom = `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`;
 
+// In‐memory auth store; swap for a real DB in production
+const loggedIn = new Map<string, { name: string }>();
 
 (async () => {
-    const tools = await getOnChainTools({
-        wallet: viem(walletClient),
-        plugins: [
-            coingecko({ apiKey: "CG-omKTqVxpPKToZaXWYBb8bCJJ" }),
-        ],
-    });
+  // Initialize on‐chain tools
+  const tools = await getOnChainTools({
+    wallet: viem(walletClient),
+    plugins: [
+        erc20({
+            tokens: [USDC],
+        }),
+      coingecko({ apiKey: "CG-omKTqVxpPKToZaXWYBb8bCJJ" }),
+    ],
+  });
 
-    const app = express();
-    // Parse URL-encoded bodies (as sent by HTML forms)
-    app.use(bodyParser.urlencoded({ extended: true }));
+  const app = express();
+  app.use(bodyParser.urlencoded({ extended: true }));
+  app.use(bodyParser.json());
 
-    // Parse JSON bodies (as sent by API clients)
-    app.use(bodyParser.json());
+  // 1️⃣ Twilio webhook for incoming WhatsApp messages
+  app.post("/whatsapp", async (req, res) => {
+    const from = req.body.From as string;        // e.g. "whatsapp:+15551234567"
+    const body = (req.body.Body as string)?.trim();
+    const phone = from.replace("whatsapp:", "");
 
-    app.post("/api/send-whatsapp", async (req, res) => {
-        console.log("Headers:", req.headers);
-        console.log("Body:", req.body);
-        const from = req.body.From;  // The sender's phone number
-        const body = req.body.Body;
-        console.log("Received WhatsApp message from", from, "with body:", body);
+    // If not logged in, send the Auth Service URL so the browser
+    // can set the PKCE cookie and redirect to Civic
+    if (!loggedIn.has(phone)) {
+      const link = `${process.env.AUTH_BASE_URL}/auth/url?state=${encodeURIComponent(phone)}`;
+      await twilioClient.messages.create({
+        to: from,
+        from: twilioFrom,
+        body: `👋 To get started, please log in: ${link}`
+      });
+      return res.sendStatus(200);
+    }
 
-        try {
-            const result = await generateText({
-                model: openai("gpt-4o-mini"),
-                tools: tools,
-                maxSteps: 10,
-                prompt: body,
-            });
+    // Already logged in → AI flow
+    try {
+      const aiResult = await generateText({
+        model: openai("gpt-4o-mini"),
+        tools,
+        maxSteps: 10,
+        prompt: body!,
+      });
+      await twilioClient.messages.create({
+        to: from,
+        from: twilioFrom,
+        body: aiResult.text
+      });
+      return res.json({ success: true });
+    } catch (err) {
+      console.error("AI error:", err);
+      await twilioClient.messages.create({
+        to: from,
+        from: twilioFrom,
+        body: "Sorry, I'm unable to process your request right now. Please try again later."
+      });
+      return res.status(500).json({ success: false });
+    }
+  });
 
-            console.log("AI response:", result.text);
+  // 2️⃣ Receive Civic‐Auth callbacks to mark users as logged in
+  app.post("/api/notify-login", async (req, res) => {
+    const { phone, user } = req.body as { phone: string; user: any };
+    const name = user.name || "User";
+    loggedIn.set(phone, { name });
 
-            const message = await twilioClient.messages.create({
-                to: `${from}`,
-                from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
-                body: result.text
-            });
-            res.json({ success: true, message: "WhatsApp message sent with AI response.", sid: message.sid });
-        } catch (error) {
-            const message = await twilioClient.messages.create({
-                to: `${from}`,
-                from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
-                body: "Sorry, Currenlty I am not able to process your request. Please try again later."
-            });
+    try {
+      await twilioClient.messages.create({
+        to: `whatsapp:${phone}`,
+        from: twilioFrom,
+        body: `✅ You’ve successfully signed in as *${name}*! You can now chat with your AI assistant.`
+      });
+      return res.json({ ok: true });
+    } catch (err) {
+      console.error("Notify‐login error:", err);
+      return res.status(500).json({ ok: false });
+    }
+  });
 
-            console.error("Failed to send WhatsApp message with AI response:", error);
-            res.status(500).json({ success: false, message: "Failed to send WhatsApp message." });
-        }
-    });
-
-
-
-    const PORT = process.env.PORT || 3000;
-    app.listen(PORT, () => {
-        console.log(`Server is running on port ${PORT}`);
-    });
-    module.exports = app;
+  // Start server
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`🚀 Agent service running on port ${PORT}`);
+  });
 })();
