@@ -1,54 +1,82 @@
-```markdown
-# CivicAuth Express Example App
+Auth Service for XDCgram
 
-A minimal Express.js application demonstrating integration with **Civic Auth** for user authentication using OAuth 2.0 and PKCE. This example includes endpoints to initiate authentication, handle callbacks, and access protected routes.
+This repository hosts the Civic Auth Service, a standalone microservice that handles user authentication using Civic's OAuth2 PKCE flow. It provides an easy way to generate login URLs, manage secure PKCE code verifiers via HTTP-only cookies, process callback exchanges, and notify downstream services (e.g., an AI bot) upon successful user login.
 
-## 🚀 Prerequisites
+Features
 
-- **Yarn**: Ensure you have _Yarn_ installed.
-- **Civic Auth Account**: Obtain your `CLIENT_ID` from the [Civic Auth Dashboard](https://auth.civic.com/dashboard).
+PKCE Flow: Implements OAuth2 PKCE with Civic Auth.
 
-## 🛠 Installation
+Cookie-Based Storage: Securely stores the PKCE code verifier in HTTP-only cookies.
 
-Install Dependencies using _Yarn_
+Callback Notification: Posts user authentication events to a configured bot server.
 
-```bash
-yarn install
-```
+Express Framework: Built on Express with TypeScript for strong typing.
 
-## 🔧 Configuration
+API Endpoints
 
-Create a `.env` file in the root directory and set the following environment variables:
+1. Generate Login URL
 
-```env
-CLIENT_ID=your_civic_auth_client_id
-SESSION_SECRET=your_secure_session_secret
-```
+Endpoint: GET /auth/url
 
-- **CLIENT_ID**: Your CivicAuth application client ID.
-- **SESSION_SECRET**: A secure, random string for signing session cookies.
+Query Params:
 
-## 🏃 Running the App
+state (string): A unique identifier (e.g., the user’s phone number)
 
-Start the Express server using _Yarn_:
+Behavior: Sets a cookie containing the PKCE code_verifier and redirects the client to Civic’s authorization endpoint.
 
-```bash
-yarn start
-```
+Response: HTTP 302 redirect to Civic Auth.
 
-The server will start on `http://localhost:3000`.
+2. OAuth Callback
 
-## 🔍 Usage
+Endpoint: GET /auth/callback
 
-Visit `http://localhost:3000` to trigger a login process.
+Query Params:
 
-Once authenticated, visit `http://localhost:3000/admin/hello`.
+code (string): Authorization code returned by Civic.
 
-## 📚 Further Reading
+state (string): The state parameter from the initial request.
 
-- [Civic Auth Documentation](https://docs.civic.com/)
-- [Express.js Documentation](https://expressjs.com/)
+Behavior:
 
----
+Reads the code_verifier from the cookie.
 
-Feel free to reach out to the [Civic Support Team](mailto:support@civic.com) for any questions or assistance with integration.
+Exchanges the code for tokens.
+
+Retrieves user info and stores it in a cookie.
+
+Notifies the bot server via BOT_CALLBACK_URL with a POST JSON payload:
+
+{ "phone": "<state>", "user": { /* user info */ } }
+
+Response: Plain text confirmation: ✅ Login successful! You can now close this window.
+
+3. Logout Redirect (Optional)
+
+Endpoint: GET /auth/logout
+
+Behavior: Redirects the user to Civic’s logout endpoint.
+
+Cookie Storage
+
+ExpressCookieStorage subclasses Civic’s CookieStorage to implement two methods:
+
+get(key: string): Promise<string | null> — Reads from req.cookies[key].
+
+set(key: string, value: string): Promise<void> — Writes via res.cookie(key, value, settings).
+
+Settings such as secure (HTTPS only) are automatically applied based on BASE_URL.
+
+Error Handling
+
+**Missing **state in /auth/url: Returns 400 Bad Request.
+
+Build URL Error: Returns 500 Internal Server Error.
+
+PKCE or Token Exchange Error: Returns 500 Internal Server Error with a log entry.
+
+Logout Error: Returns 500 Internal Server Error.
+
+License
+
+MIT © Sambit Sargam Ekalabya
+
