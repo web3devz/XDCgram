@@ -16,7 +16,6 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Wallet setup
 const account = privateKeyToAccount(process.env.KEY as `0x${string}`);
 const walletClient = createWalletClient({
   account,
@@ -24,25 +23,20 @@ const walletClient = createWalletClient({
   chain: xdcTestnet,
 });
 
-// Twilio client & WhatsApp “from” 
 const twilioClient = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
+  process.env.TWILIO_ACCOUNT_SID!,
+  process.env.TWILIO_AUTH_TOKEN!
 );
 const twilioFrom = `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`;
 
-// In‐memory auth store; swap for a real DB in production
 const loggedIn = new Map<string, { name: string }>();
 
 (async () => {
-  // Initialize on‐chain tools
   const tools = await getOnChainTools({
     wallet: viem(walletClient),
     plugins: [
-        erc20({
-            tokens: [USDC],
-        }),
-      coingecko({ apiKey: "CG-omKTqVxpPKToZaXWYBb8bCJJ" }),
+      erc20({ tokens: [USDC] }),
+      coingecko({ apiKey: "CG-omKTqVxpPKToZaXWYBb8bCJJ" })
     ],
   });
 
@@ -50,14 +44,11 @@ const loggedIn = new Map<string, { name: string }>();
   app.use(bodyParser.urlencoded({ extended: true }));
   app.use(bodyParser.json());
 
-  // 1️⃣ Twilio webhook for incoming WhatsApp messages
   app.post("/whatsapp", async (req, res) => {
-    const from = req.body.From as string;        // e.g. "whatsapp:+15551234567"
+    const from = req.body.From as string;
     const body = (req.body.Body as string)?.trim();
     const phone = from.replace("whatsapp:", "");
 
-    // If not logged in, send the Auth Service URL so the browser
-    // can set the PKCE cookie and redirect to Civic
     if (!loggedIn.has(phone)) {
       const link = `${process.env.AUTH_BASE_URL}/auth/url?state=${encodeURIComponent(phone)}`;
       await twilioClient.messages.create({
@@ -68,13 +59,56 @@ const loggedIn = new Map<string, { name: string }>();
       return res.sendStatus(200);
     }
 
-    // Already logged in → AI flow
+    const swapMatch = body?.match(/swap\s+(\d+(\.\d+)?)\s+usdc\s+from\s+(eth|arb|xdc)\s+to\s+(eth|arb|xdc)/i);
+    if (swapMatch) {
+      const amount = swapMatch[1];
+      const fromChain = swapMatch[3].toLowerCase();
+      const toChain = swapMatch[4].toLowerCase();
+      const routeKey = `${fromChain}->${toChain}`;
+      const validRoutes: Record<string, string> = {
+        "eth->xdc": "eth-to-xdc",
+        "arb->xdc": "arb-to-xdc",
+        "xdc->eth": "xdc-to-eth",
+        "xdc->arb": "xdc-to-arb"
+      };
+
+      const apiPath = validRoutes[routeKey];
+      if (!apiPath) {
+        await twilioClient.messages.create({
+          to: from,
+          from: twilioFrom,
+          body: `❌ Unsupported swap direction: ${fromChain.toUpperCase()} to ${toChain.toUpperCase()}`
+        });
+        return res.sendStatus(200);
+      }
+
+      try {
+        const response = await axios.post(`http://localhost:3002/bridge/${apiPath}`, {
+          to: process.env.WALLET_ADDRESS,
+          amount
+        });
+        await twilioClient.messages.create({
+          to: from,
+          from: twilioFrom,
+          body: `✅ Swap successful!\n\n🔁 ${amount} USDC from ${fromChain.toUpperCase()} to ${toChain.toUpperCase()}\n🔗 TxHash: ${response.data.txHash}`
+        });
+      } catch (e: any) {
+        const errMsg = e?.response?.data?.error || e.message;
+        await twilioClient.messages.create({
+          to: from,
+          from: twilioFrom,
+          body: `❌ Swap failed: ${errMsg}`
+        });
+      }
+      return res.sendStatus(200);
+    }
+
     try {
       const aiResult = await generateText({
-        model: openai("gpt-4o-mini"),
+        model: openai("gpt-4o"),
         tools,
         maxSteps: 10,
-        prompt: body!,
+        prompt: body!
       });
       await twilioClient.messages.create({
         to: from,
@@ -93,7 +127,6 @@ const loggedIn = new Map<string, { name: string }>();
     }
   });
 
-  // 2️⃣ Receive Civic‐Auth callbacks to mark users as logged in
   app.post("/api/notify-login", async (req, res) => {
     const { phone, user } = req.body as { phone: string; user: any };
     const name = user.name || "User";
@@ -112,7 +145,6 @@ const loggedIn = new Map<string, { name: string }>();
     }
   });
 
-  // Start server
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
     console.log(`🚀 Agent service running on port ${PORT}`);
