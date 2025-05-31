@@ -83,7 +83,7 @@ const loggedIn = new Map<string, { name: string }>();
       }
 
       try {
-        const response = await axios.post(`http://localhost:3002/bridge/${apiPath}`, {
+        const response = await axios.post(`https://xdcgram-production.up.railway.app/bridge/${apiPath}`, {
           to: process.env.WALLET_ADDRESS,
           amount
         });
