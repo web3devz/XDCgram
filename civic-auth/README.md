@@ -1,4 +1,4 @@
-Auth Service for XDCgram
+## Civic Auth Service for XDCgram
 
 This repository hosts the Civic Auth Service, a standalone microservice that handles user authentication using Civic's OAuth2 PKCE flow. It provides an easy way to generate login URLs, manage secure PKCE code verifiers via HTTP-only cookies, process callback exchanges, and notify downstream services (e.g., an AI bot) upon successful user login.
 
