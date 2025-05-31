@@ -10,6 +10,13 @@ dotenv.config();
 
 const app = express();
 app.use(express.json());
+// add CORS headers
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  next();
+});
 
 const LOCKER_ETH = '0xA3272527814B500F5233c97C1571baCAC244a7a3';
 const LOCKER_ARB = '0xB08A3886210de9462391D3001DC6AF58b49C8f13';
@@ -121,4 +128,4 @@ app.post('/bridge/xdc-to-arb', async (req, res) => {
   }
 });
 
-app.listen(3000, () => console.log('Bridge server running on http://localhost:3000'));
+app.listen(3002, () => console.log('Bridge server running on http://localhost:3002'));
