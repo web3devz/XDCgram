@@ -1,4 +1,4 @@
-# 🚀 Civic Auth Service for **XDCgram**
+# 🚀 Civic Auth Service for **XinChat**
 
 > A standalone OAuth2 PKCE microservice for Civic Auth — built with Express, TypeScript, and designed to talk to your bot server.
 

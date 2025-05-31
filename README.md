@@ -1,1 +1,1 @@
-# XDCgram
+# XinChat
