@@ -14,7 +14,7 @@ With seamless **Civic login**, automated wallet generation, and powerful **USDCE
 ### ✅ AI-Powered Messaging
 - Natural language processing (NLP) enables users to send commands like:
   - “Send 10 XDC to 0x123…”
-  - “Swap USDC to ARB”
+  - “Swap USDC from XDC to ARB”
   - “Show NFT collection”
 - AI helps interpret intent, optimize transactions, and detect fraud.
 
