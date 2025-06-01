@@ -128,4 +128,4 @@ app.post('/bridge/xdc-to-arb', async (req, res) => {
   }
 });
 
-app.listen(3002, () => console.log('Bridge server running on http://localhost:3002'));
+app.listen(3000, () => console.log('Bridge server running on http://localhost:3000'));
